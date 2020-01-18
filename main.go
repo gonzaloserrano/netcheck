@@ -50,7 +50,8 @@ func main() {
 
 	goterm.Clear()
 
-	var data0, data1 []float64
+	data0 := []float64{0}
+	data1 := []float64{0}
 	for {
 		goterm.MoveCursor(1, 1)
 
@@ -79,7 +80,7 @@ const (
 func display(address string, data []float64, rtt int64) []float64 {
 	data = append(data, float64(rtt))
 	if len(data) > maxLen {
-		data = data[1 : maxLen+1]
+		data = append([]float64{0}, data[2:maxLen+1]...)
 	}
 	caption := fmt.Sprintf("PING %s: %02d ms", address, rtt)
 	graph := asciigraph.Plot(
