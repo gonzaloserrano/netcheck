@@ -48,14 +48,10 @@ func main() {
 		}()
 	}
 
-	data0 := []float64{0}
-	data1 := []float64{0}
-
 	goterm.Clear()
-	for {
-		rtt0 := <-out[0]
-		rtt1 := <-out[1]
 
+	var data0, data1 []float64
+	for {
 		goterm.MoveCursor(1, 1)
 
 		color.Set(color.FgWhite)
@@ -63,10 +59,10 @@ func main() {
 		fmt.Printf("%s (gateway) vs %s (CloudFlare's DNS)\n\n", addresses[0], addresses[1])
 
 		color.Set(color.FgCyan)
-		data0 = display(addresses[0], data0, rtt0)
+		data0 = display(addresses[0], data0, <-out[0])
 
 		color.Set(color.FgMagenta)
-		data1 = display(addresses[1], data1, rtt1)
+		data1 = display(addresses[1], data1, <-out[1])
 
 		color.Set(color.FgWhite)
 		fmt.Println("Press Control-C to exit")
@@ -85,7 +81,7 @@ func display(address string, data []float64, rtt int64) []float64 {
 	if len(data) > maxLen {
 		data = data[1 : maxLen+1]
 	}
-	caption := fmt.Sprintf("PING %s: %d ms", address, rtt)
+	caption := fmt.Sprintf("PING %s: %02d ms", address, rtt)
 	graph := asciigraph.Plot(
 		data,
 		asciigraph.Height(maxHeight),
