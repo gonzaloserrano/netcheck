@@ -10,3 +10,5 @@ require (
 	github.com/sparrc/go-ping v0.0.0-20190613174326-4e5b6552494c
 	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa // indirect
 )
+
+replace github.com/guptarohit/asciigraph => github.com/jesseduffield/asciigraph v0.4.2-0.20190605104717-6d88e39309ee

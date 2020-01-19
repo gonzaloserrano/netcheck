@@ -52,6 +52,7 @@ func main() {
 
 	data0 := []float64{0}
 	data1 := []float64{0}
+	var max int64
 	for {
 		goterm.MoveCursor(1, 1)
 
@@ -59,11 +60,21 @@ func main() {
 		fmt.Println("Network check with ping:")
 		fmt.Printf("%s (gateway) vs %s (CloudFlare's DNS)\n\n", addresses[0], addresses[1])
 
+		v0 := <-out[0]
+		v1 := <-out[1]
+
+		if v0 > max {
+			max = v0
+		}
+		if v1 > max {
+			max = v1
+		}
+
 		color.Set(color.FgCyan)
-		data0 = display(addresses[0], data0, <-out[0])
+		data0 = display(addresses[0], data0, v0, max)
 
 		color.Set(color.FgMagenta)
-		data1 = display(addresses[1], data1, <-out[1])
+		data1 = display(addresses[1], data1, v1, max)
 
 		color.Set(color.FgWhite)
 		fmt.Println("Press Control-C to exit")
@@ -77,16 +88,16 @@ const (
 	maxHeight = 10
 )
 
-func display(address string, data []float64, rtt int64) []float64 {
+func display(address string, data []float64, rtt, maxValue int64) []float64 {
 	data = append(data, float64(rtt))
 	if len(data) > maxLen {
 		data = append([]float64{0}, data[2:maxLen+1]...)
 	}
 	caption := fmt.Sprintf("PING %s: %02d ms", address, rtt)
-	graph := asciigraph.Plot(
-		data,
+	graph := asciigraph.Plot(data,
 		asciigraph.Height(maxHeight),
 		asciigraph.Caption(caption),
+		asciigraph.Max(float64(maxValue)),
 	)
 	fmt.Printf("%s\n\n", graph)
 

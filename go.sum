@@ -8,6 +8,8 @@ github.com/guptarohit/asciigraph v0.4.2-0.20191006150553-f9506970428c h1:lj/KuGM
 github.com/guptarohit/asciigraph v0.4.2-0.20191006150553-f9506970428c/go.mod h1:9fYEfE5IGJGxlP1B+w8wHFy7sNZMhPtn59f0RLtpRFM=
 github.com/jackpal/gateway v1.0.5 h1:qzXWUJfuMdlLMtt0a3Dgt+xkWQiA5itDEITVJtuSwMc=
 github.com/jackpal/gateway v1.0.5/go.mod h1:lTpwd4ACLXmpyiCTRtfiNyVnUmqT9RivzCDQetPfnjA=
+github.com/jesseduffield/asciigraph v0.4.2-0.20190605104717-6d88e39309ee h1:LNVnrJkJYTLtJSP9tk0beiF8+euF14BhvRwNk1A7OxI=
+github.com/jesseduffield/asciigraph v0.4.2-0.20190605104717-6d88e39309ee/go.mod h1:Z9UKHveKXXgyo8ME7R8yxh/BUTFOK+FgfWKlhy8oOAg=
 github.com/mattn/go-colorable v0.1.4 h1:snbPLB8fVfU9iwbbo30TPtbLRzwWu6aJS6Xh4eaaviA=
 github.com/mattn/go-colorable v0.1.4/go.mod h1:U0ppj6V5qS13XJ6of8GYAs25YV2eR4EVcfRqFIhoBtE=
 github.com/mattn/go-isatty v0.0.8/go.mod h1:Iq45c/XA43vh69/j3iqttzPXn0bhXyGjM0Hdxcsrc5s=
