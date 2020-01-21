@@ -8,8 +8,8 @@ import (
 
 	"github.com/buger/goterm"
 	"github.com/fatih/color"
-	"github.com/guptarohit/asciigraph"
 	"github.com/jackpal/gateway"
+	"github.com/jesseduffield/asciigraph"
 	"github.com/sparrc/go-ping"
 )
 
