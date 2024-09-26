@@ -1,6 +1,6 @@
 module github.com/gonzaloserrano/netcheck
 
-go 1.13
+go 1.23
 
 require (
 	github.com/buger/goterm v0.0.0-20181115115552-c206103e1f37
@@ -8,5 +8,11 @@ require (
 	github.com/jackpal/gateway v1.0.5
 	github.com/jesseduffield/asciigraph v0.4.2-0.20190605104717-6d88e39309ee
 	github.com/sparrc/go-ping v0.0.0-20190613174326-4e5b6552494c
-	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa // indirect
+)
+
+require (
+	github.com/mattn/go-colorable v0.1.4 // indirect
+	github.com/mattn/go-isatty v0.0.11 // indirect
+	golang.org/x/net v0.29.0 // indirect
+	golang.org/x/sys v0.25.0 // indirect
 )
