@@ -2,32 +2,36 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/buger/goterm"
-	"github.com/fatih/color"
+	"github.com/guptarohit/asciigraph"
 	"github.com/jackpal/gateway"
-	"github.com/jesseduffield/asciigraph"
-	"github.com/sparrc/go-ping"
+	probing "github.com/prometheus-community/pro-bing"
 )
 
 const cloudFlareIP = "1.1.1.1"
 
 func main() {
+	frames := flag.Int("frames", 0, "number of frames to render (0 = unlimited)")
+	flag.Parse()
+
 	gatewayIP, err := gateway.DiscoverGateway()
 	if err != nil {
 		panic(err)
 	}
 
-	// listen for ctrl-C signal
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		<-c
+		<-sigCh
+		fmt.Print("\033[?25h") // show cursor
 		cancel()
 		os.Exit(0)
 	}()
@@ -38,8 +42,6 @@ func main() {
 	}
 	addresses := []string{gatewayIP.String(), cloudFlareIP}
 	for i, address := range addresses {
-		i := i
-		address := address
 		go func() {
 			err := newPing(ctx, address, out[i])
 			if err != nil {
@@ -48,39 +50,67 @@ func main() {
 		}()
 	}
 
+	fmt.Print("\033[?25l") // hide cursor
 	goterm.Clear()
+	goterm.Flush()
 
-	data0 := []float64{0}
-	data1 := []float64{0}
-	var max int64
+	data := [][]float64{{}, {}}
+	var maxRTT int64
+	frameCount := 0
 	for {
-		goterm.MoveCursor(1, 1)
-
-		color.Set(color.FgWhite)
-		fmt.Println("Network check with ping:")
-		fmt.Printf("%s (gateway) vs %s (CloudFlare's DNS)\n\n", addresses[0], addresses[1])
-
 		v0 := <-out[0]
 		v1 := <-out[1]
 
-		if v0 > max {
-			max = v0
-		}
-		if v1 > max {
-			max = v1
-		}
+		maxRTT = max(maxRTT, v0, v1)
 
-		color.Set(color.FgCyan)
-		data0 = display(addresses[0], data0, v0, max)
+		data[0] = appendData(data[0], v0)
+		data[1] = appendData(data[1], v1)
 
-		color.Set(color.FgMagenta)
-		data1 = display(addresses[1], data1, v1, max)
+		frame := renderFrame(addresses, data, []int64{v0, v1}, maxRTT, goterm.Width())
 
-		color.Set(color.FgWhite)
-		fmt.Println("Press Control-C to exit")
-
+		goterm.Clear()
+		goterm.MoveCursor(1, 1)
+		goterm.Print(frame)
 		goterm.Flush()
+
+		frameCount++
+		if *frames > 0 && frameCount >= *frames {
+			fmt.Print("\033[?25h") // show cursor
+			return
+		}
 	}
+}
+
+func renderFrame(addresses []string, data [][]float64, rtts []int64, maxRTT int64, width int) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Ping latency: %s (gateway) vs %s (CloudFlare DNS)\n\n", addresses[0], addresses[1]))
+
+	maxDataLen := max(len(data[0]), len(data[1]))
+	graphWidth := min(width-10, maxDataLen) // don't stretch sparse data
+	graphWidth = max(graphWidth, 1)
+
+	padding := float64(maxRTT) * 0.1 // 10% padding top
+	if padding < 1 {
+		padding = 1
+	}
+
+	graph := asciigraph.PlotMany(data,
+		asciigraph.Width(graphWidth),
+		asciigraph.Height(maxHeight),
+		asciigraph.LowerBound(0),
+		asciigraph.UpperBound(float64(maxRTT)+padding),
+		asciigraph.SeriesColors(asciigraph.Cyan, asciigraph.Magenta),
+		asciigraph.SeriesLegends(
+			fmt.Sprintf("%s: %02d ms", addresses[0], rtts[0]),
+			fmt.Sprintf("%s: %02d ms", addresses[1], rtts[1]),
+		),
+	)
+	sb.WriteString(graph)
+	sb.WriteString("\n\n")
+	sb.WriteString("Press Control-C to exit\n")
+
+	return sb.String()
 }
 
 const (
@@ -88,24 +118,16 @@ const (
 	maxHeight = 10
 )
 
-func display(address string, data []float64, rtt, maxValue int64) []float64 {
+func appendData(data []float64, rtt int64) []float64 {
 	data = append(data, float64(rtt))
 	if len(data) > maxLen {
-		data = append([]float64{0}, data[2:maxLen+1]...)
+		data = data[1:]
 	}
-	caption := fmt.Sprintf("PING %s: %02d ms", address, rtt)
-	graph := asciigraph.Plot(data,
-		asciigraph.Height(maxHeight),
-		asciigraph.Caption(caption),
-		asciigraph.Max(float64(maxValue)),
-	)
-	fmt.Printf("%s\n\n", graph)
-
 	return data
 }
 
 func newPing(ctx context.Context, address string, out chan int64) error {
-	pinger, err := ping.NewPinger(address)
+	pinger, err := probing.NewPinger(address)
 	if err != nil {
 		return err
 	}
@@ -115,7 +137,7 @@ func newPing(ctx context.Context, address string, out chan int64) error {
 		pinger.Stop()
 	}()
 
-	pinger.OnRecv = func(pkt *ping.Packet) {
+	pinger.OnRecv = func(pkt *probing.Packet) {
 		out <- pkt.Rtt.Milliseconds()
 	}
 
