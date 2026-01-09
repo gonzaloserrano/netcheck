@@ -132,6 +132,8 @@ func newPing(ctx context.Context, address string, out chan int64) error {
 		return err
 	}
 
+	pinger.SetPrivileged(false) // use UDP ping, no root required
+
 	go func() {
 		<-ctx.Done()
 		pinger.Stop()
