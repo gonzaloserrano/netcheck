@@ -1,11 +1,49 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
 )
 
+// mockPingSource sends predetermined RTT values.
+type mockPingSource struct {
+	address string
+	values  []int64
+}
+
+func (m *mockPingSource) Address() string { return m.address }
+
+func (m *mockPingSource) Start(ctx context.Context) (<-chan int64, error) {
+	ch := make(chan int64)
+	go func() {
+		defer close(ch)
+		for _, v := range m.values {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- v:
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// mockTerminal captures output for testing.
+type mockTerminal struct {
+	buf   bytes.Buffer
+	width int
+}
+
+func (t *mockTerminal) Write(p []byte) (n int, err error) { return t.buf.Write(p) }
+func (t *mockTerminal) Clear()                            {}
+func (t *mockTerminal) MoveCursor(x, y int)               {}
+func (t *mockTerminal) Flush()                            {}
+func (t *mockTerminal) Width() int                        { return t.width }
+
 func TestAppendData(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		data     []float64
@@ -38,6 +76,7 @@ func TestAppendData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := appendData(tt.data, tt.rtt)
 			if len(got) != tt.wantLen {
 				t.Errorf("len = %d, want %d", len(got), tt.wantLen)
@@ -50,6 +89,7 @@ func TestAppendData(t *testing.T) {
 }
 
 func TestRenderFrame(t *testing.T) {
+	t.Parallel()
 	addresses := []string{"192.168.1.1", "1.1.1.1"}
 	data := [][]float64{{5, 10, 15}, {8, 12, 18}}
 	rtts := []int64{15, 18}
@@ -63,10 +103,10 @@ func TestRenderFrame(t *testing.T) {
 	}
 
 	// Check legends with RTT values
-	if !strings.Contains(frame, "192.168.1.1: 15 ms") {
+	if !strings.Contains(frame, "Gateway: 15 ms") {
 		t.Error("missing gateway RTT in legend")
 	}
-	if !strings.Contains(frame, "1.1.1.1: 18 ms") {
+	if !strings.Contains(frame, "CloudFlare: 18 ms") {
 		t.Error("missing CloudFlare RTT in legend")
 	}
 
@@ -81,7 +121,29 @@ func TestRenderFrame(t *testing.T) {
 	}
 }
 
+func TestRenderFrameSeriesOrdering(t *testing.T) {
+	t.Parallel()
+	addresses := []string{"192.168.1.1", "1.1.1.1"}
+	data := [][]float64{{10, 20, 30}, {5, 15, 25}}
+
+	// When gateway (rtts[0]) is higher, it should be rendered last.
+	// Legend order in output reflects render order (last series = last legend).
+	frame1 := renderFrame(addresses, data, []int64{30, 25}, 30, 80)
+
+	// When CloudFlare (rtts[1]) is higher, it should be rendered last.
+	frame2 := renderFrame(addresses, data, []int64{20, 35}, 35, 80)
+
+	// Both frames should contain both legends
+	if !strings.Contains(frame1, "Gateway: 30 ms") || !strings.Contains(frame1, "CloudFlare: 25 ms") {
+		t.Error("frame1 missing legends")
+	}
+	if !strings.Contains(frame2, "Gateway: 20 ms") || !strings.Contains(frame2, "CloudFlare: 35 ms") {
+		t.Error("frame2 missing legends")
+	}
+}
+
 func TestRenderFrameScaleChanges(t *testing.T) {
+	t.Parallel()
 	addresses := []string{"192.168.1.1", "1.1.1.1"}
 
 	// First frame with low RTT
@@ -100,5 +162,102 @@ func TestRenderFrameScaleChanges(t *testing.T) {
 	// Frame2 should have higher scale
 	if !strings.Contains(frame2, "50") {
 		t.Error("frame2 should show scale up to 50")
+	}
+}
+
+func TestRunLoop(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		gwValues  []int64
+		cfValues  []int64
+		maxFrames int
+		wantInOut []string
+	}{
+		{
+			name:      "basic render",
+			gwValues:  []int64{10, 20, 15},
+			cfValues:  []int64{25, 30, 28},
+			maxFrames: 3,
+			wantInOut: []string{
+				"192.168.1.1 (gateway)",
+				"1.1.1.1 (CloudFlare DNS)",
+				"Press Control-C to exit",
+			},
+		},
+		{
+			name:      "shows current RTT in legend",
+			gwValues:  []int64{42},
+			cfValues:  []int64{55},
+			maxFrames: 1,
+			wantInOut: []string{
+				"Gateway: 42 ms",
+				"CloudFlare: 55 ms",
+			},
+		},
+		{
+			name:      "graph scales with high RTT",
+			gwValues:  []int64{10, 100},
+			cfValues:  []int64{20, 80},
+			maxFrames: 2,
+			wantInOut: []string{"100"}, // Y-axis should show 100
+		},
+		{
+			name:      "handles zero RTT",
+			gwValues:  []int64{0, 5},
+			cfValues:  []int64{0, 3},
+			maxFrames: 2,
+			wantInOut: []string{"00 ms"}, // zero formatted
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			term := &mockTerminal{width: 80}
+
+			sources := []PingSource{
+				&mockPingSource{address: "192.168.1.1", values: tt.gwValues},
+				&mockPingSource{address: "1.1.1.1", values: tt.cfValues},
+			}
+
+			err := runLoop(ctx, term, sources, tt.maxFrames)
+			if err != nil {
+				t.Fatalf("runLoop error: %v", err)
+			}
+
+			out := term.buf.String()
+			for _, want := range tt.wantInOut {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\ngot:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRunLoopContextCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	term := &mockTerminal{width: 80}
+
+	// Sources with many values, but we cancel early
+	sources := []PingSource{
+		&mockPingSource{address: "192.168.1.1", values: []int64{10, 20, 30, 40, 50}},
+		&mockPingSource{address: "1.1.1.1", values: []int64{15, 25, 35, 45, 55}},
+	}
+
+	done := make(chan error)
+	go func() {
+		done <- runLoop(ctx, term, sources, 0) // unlimited frames
+	}()
+
+	// Let it render a couple frames then cancel
+	cancel()
+
+	err := <-done
+	if err != nil {
+		t.Fatalf("runLoop error: %v", err)
 	}
 }

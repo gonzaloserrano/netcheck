@@ -3,13 +3,13 @@ module github.com/gonzaloserrano/netcheck
 go 1.25
 
 require (
+	github.com/buger/goterm v1.0.4
 	github.com/guptarohit/asciigraph v0.7.3
 	github.com/jackpal/gateway v1.1.1
 	github.com/prometheus-community/pro-bing v0.7.0
 )
 
 require (
-	github.com/buger/goterm v1.0.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
