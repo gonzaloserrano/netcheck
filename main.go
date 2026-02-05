@@ -61,6 +61,7 @@ func main() {
 	fmt.Print("\033[?25l") // hide cursor
 
 	if err := runLoop(ctx, &gotermTerminal{}, sources, *frames); err != nil {
+		fmt.Print("\033[?25h") // show cursor before exit
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

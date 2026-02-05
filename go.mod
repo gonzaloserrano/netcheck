@@ -1,6 +1,8 @@
 module github.com/gonzaloserrano/netcheck
 
-go 1.25
+go 1.24.2
+
+toolchain go1.24.7
 
 require (
 	github.com/buger/goterm v1.0.4
