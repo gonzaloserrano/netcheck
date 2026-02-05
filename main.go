@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/buger/goterm"
 	"github.com/guptarohit/asciigraph"
@@ -33,24 +35,30 @@ type Terminal interface {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	frames := flag.Int("frames", 0, "number of frames to render (0 = unlimited)")
 	flag.Parse()
 
 	gatewayIP, err := gateway.DiscoverGateway()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "discover gateway: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("discover gateway: %v", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
 		<-sigCh
-		fmt.Print("\033[?25h") // show cursor
 		cancel()
-		os.Exit(0)
 	}()
 
 	sources := []PingSource{
@@ -58,17 +66,13 @@ func main() {
 		&realPinger{address: cloudFlareIP},
 	}
 
-	fmt.Print("\033[?25l") // hide cursor
+	fmt.Print("\033[?25l")       // hide cursor
+	defer fmt.Print("\033[?25h") // show cursor
 
-	if err := runLoop(ctx, &gotermTerminal{}, sources, *frames); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Print("\033[?25h") // show cursor
+	return runLoop(ctx, &gotermTerminal{}, sources, *frames, time.Second)
 }
 
-func runLoop(ctx context.Context, term Terminal, sources []PingSource, maxFrames int) error {
+func runLoop(ctx context.Context, term Terminal, sources []PingSource, maxFrames int, interval time.Duration) error {
 	channels := make([]<-chan int64, len(sources))
 	addresses := make([]string, len(sources))
 
@@ -84,35 +88,103 @@ func runLoop(ctx context.Context, term Terminal, sources []PingSource, maxFrames
 	term.Clear()
 	term.Flush()
 
-	data := [][]float64{{}, {}}
+	data := make([][]float64, len(sources))
+	rtts := make([]int64, len(sources))
+	hasData := make([]bool, len(sources))
 	var maxRTT int64
 	frameCount := 0
 
+	render := func() error {
+		frame := renderFrame(addresses, data, rtts, maxRTT, term.Width())
+
+		term.MoveCursor(1, 1)
+		if _, err := fmt.Fprint(term, frame); err != nil {
+			return fmt.Errorf("write frame: %w", err)
+		}
+		if _, err := fmt.Fprint(term, "\033[J"); err != nil {
+			return fmt.Errorf("clear screen: %w", err)
+		}
+		term.Flush()
+		return nil
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Prepare select cases
+	cases := make([]reflect.SelectCase, len(channels)+2)
+	cases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())}
+	cases[1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ticker.C)}
+	for i, ch := range channels {
+		cases[i+2] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)}
+	}
+
 	for {
-		select {
-		case <-ctx.Done():
+		if maxFrames > 0 && frameCount >= maxFrames {
 			return nil
-		case v0 := <-channels[0]:
-			v1 := <-channels[1]
+		}
 
-			maxRTT = max(maxRTT, v0, v1)
-			data[0] = appendData(data[0], v0)
-			data[1] = appendData(data[1], v1)
-
-			frame := renderFrame(addresses, data, []int64{v0, v1}, maxRTT, term.Width())
-
-			term.MoveCursor(1, 1)
-			if _, err := fmt.Fprint(term, frame); err != nil {
-				return fmt.Errorf("write frame: %w", err)
+		chosen, value, ok := reflect.Select(cases)
+		if chosen == 0 { // ctx.Done()
+			return nil
+		}
+		if chosen == 1 { // ticker.C
+			ready := true
+			for _, h := range hasData {
+				if !h {
+					ready = false
+					break
+				}
 			}
-			if _, err := fmt.Fprint(term, "\033[J"); err != nil {
-				return fmt.Errorf("clear screen: %w", err)
+			if ready {
+				for i := range data {
+					data[i] = appendData(data[i], rtts[i])
+				}
+				if err := render(); err != nil {
+					return err
+				}
+				frameCount++
 			}
-			term.Flush()
+			continue
+		}
 
-			frameCount++
-			if maxFrames > 0 && frameCount >= maxFrames {
+		// One of the channels
+		if !ok {
+			cases[chosen].Chan = reflect.ValueOf(nil)
+
+			// Check if all pinger channels are closed
+			allClosed := true
+			for i := 2; i < len(cases); i++ {
+				if cases[i].Chan.IsValid() && !cases[i].Chan.IsNil() {
+					allClosed = false
+					break
+				}
+			}
+			if allClosed {
 				return nil
+			}
+			continue
+		}
+
+		idx := chosen - 2
+		v := value.Int()
+		rtts[idx] = v
+		hasData[idx] = true
+		if v > maxRTT {
+			maxRTT = v
+		}
+
+		// Update RTT in legend immediately
+		ready := true
+		for _, h := range hasData {
+			if !h {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			if err := render(); err != nil {
+				return err
 			}
 		}
 	}
@@ -165,43 +237,87 @@ func (*gotermTerminal) Width() int                         { return goterm.Width
 func renderFrame(addresses []string, data [][]float64, rtts []int64, maxRTT int64, width int) string {
 	var sb strings.Builder
 
-	fmt.Fprintf(&sb, "Ping latency: %s (gateway) vs %s (CloudFlare DNS)\n\n", addresses[0], addresses[1])
+	sb.WriteString("Ping latency: ")
+	for i, addr := range addresses {
+		if i > 0 {
+			sb.WriteString(" vs ")
+		}
+		label := "gateway"
+		if i > 0 {
+			label = "CloudFlare DNS"
+		}
+		fmt.Fprintf(&sb, "%s (%s)", addr, label)
+	}
+	sb.WriteString("\n\n")
 
-	maxDataLen := max(len(data[0]), len(data[1]))
-	// Use width-1 to avoid asciigraph interpolation artifacts when width == data length
-	graphWidth := min(width-10, maxDataLen-1)
-	graphWidth = max(graphWidth, 1)
+	maxDataLen := 0
+	for _, d := range data {
+		if len(d) > maxDataLen {
+			maxDataLen = len(d)
+		}
+	}
+
+	// Use width-10 to leave space for Y-axis labels.
+	// Also ensure graphWidth is at least 1.
+	graphWidth := width - 10
+	if maxDataLen-1 < graphWidth {
+		graphWidth = maxDataLen - 1
+	}
+	if graphWidth < 1 {
+		graphWidth = 1
+	}
 
 	padding := float64(maxRTT) * 0.1 // 10% padding top
 	if padding < 1 {
 		padding = 1
 	}
 
-	// Render higher-value series last so it's visible on top when lines cross.
-	// asciigraph overwrites earlier series with later ones at same position.
-	plotData := data
-	colors := []asciigraph.AnsiColor{asciigraph.Cyan, asciigraph.Magenta}
-	legends := []string{
-		fmt.Sprintf("Gateway: %02d ms", rtts[0]),
-		fmt.Sprintf("CloudFlare: %02d ms", rtts[1]),
-	}
-	if rtts[0] > rtts[1] {
-		plotData = [][]float64{data[1], data[0]}
-		colors = []asciigraph.AnsiColor{asciigraph.Magenta, asciigraph.Cyan}
-		legends = []string{legends[1], legends[0]}
+	allColors := []asciigraph.AnsiColor{asciigraph.Cyan, asciigraph.Magenta, asciigraph.Yellow, asciigraph.Red, asciigraph.Green}
+	colors := make([]asciigraph.AnsiColor, len(data))
+	for i := range data {
+		colors[i] = allColors[i%len(allColors)]
 	}
 
-	graph := asciigraph.PlotMany(plotData,
-		asciigraph.Width(graphWidth),
-		asciigraph.Height(maxHeight),
-		asciigraph.LowerBound(0),
-		asciigraph.UpperBound(float64(maxRTT)+padding),
-		asciigraph.SeriesColors(colors...),
-		asciigraph.SeriesLegends(legends...),
-	)
-	// Clear to end of line after each line to prevent artifacts when scale changes
-	graph = strings.ReplaceAll(graph, "\n", "\x1b[K\n")
-	sb.WriteString(graph)
+	legends := make([]string, len(rtts))
+	for i, rtt := range rtts {
+		label := "Gateway"
+		if i > 0 {
+			label = "CloudFlare"
+		}
+		legends[i] = fmt.Sprintf("%s: %02d ms", label, rtt)
+	}
+
+	canPlot := true
+	for _, d := range data {
+		if len(d) == 0 {
+			canPlot = false
+			break
+		}
+	}
+
+	if canPlot {
+		graph := asciigraph.PlotMany(data,
+			asciigraph.Width(graphWidth),
+			asciigraph.Height(maxHeight),
+			asciigraph.LowerBound(0),
+			asciigraph.UpperBound(float64(maxRTT)+padding),
+			asciigraph.SeriesColors(colors...),
+			asciigraph.SeriesLegends(legends...),
+		)
+		// Clear to end of line after each line to prevent artifacts when scale changes
+		graph = strings.ReplaceAll(graph, "\n", "\x1b[K\n")
+		sb.WriteString(graph)
+	} else {
+		sb.WriteString("\n   [ Waiting for more data... ]\n\n")
+		// Add legends manually if we can't plot yet
+		for i, l := range legends {
+			if i > 0 {
+				sb.WriteString("    ")
+			}
+			fmt.Fprintf(&sb, "%s", l)
+		}
+		sb.WriteString("\n")
+	}
 	sb.WriteString("\x1b[K") // clear last line too
 	sb.WriteString("\n\n")
 	sb.WriteString("Press Control-C to exit\n")

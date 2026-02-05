@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockPingSource sends predetermined RTT values.
@@ -121,16 +122,15 @@ func TestRenderFrame(t *testing.T) {
 	}
 }
 
-func TestRenderFrameSeriesOrdering(t *testing.T) {
+func TestRenderFrameStability(t *testing.T) {
 	t.Parallel()
 	addresses := []string{"192.168.1.1", "1.1.1.1"}
 	data := [][]float64{{10, 20, 30}, {5, 15, 25}}
 
-	// When gateway (rtts[0]) is higher, it should be rendered last.
-	// Legend order in output reflects render order (last series = last legend).
+	// Frame 1: Gateway RTT is higher (30 vs 25)
 	frame1 := renderFrame(addresses, data, []int64{30, 25}, 30, 80)
 
-	// When CloudFlare (rtts[1]) is higher, it should be rendered last.
+	// Frame 2: CloudFlare RTT is higher (20 vs 35)
 	frame2 := renderFrame(addresses, data, []int64{20, 35}, 35, 80)
 
 	// Both frames should contain both legends
@@ -139,6 +139,19 @@ func TestRenderFrameSeriesOrdering(t *testing.T) {
 	}
 	if !strings.Contains(frame2, "Gateway: 20 ms") || !strings.Contains(frame2, "CloudFlare: 35 ms") {
 		t.Error("frame2 missing legends")
+	}
+
+	// Legend order should be stable (Gateway then CloudFlare)
+	posGW1 := strings.Index(frame1, "Gateway:")
+	posCF1 := strings.Index(frame1, "CloudFlare:")
+	posGW2 := strings.Index(frame2, "Gateway:")
+	posCF2 := strings.Index(frame2, "CloudFlare:")
+
+	if posGW1 >= posCF1 {
+		t.Errorf("frame1: Gateway legend should come before CloudFlare, got GW at %d and CF at %d", posGW1, posCF1)
+	}
+	if posGW2 >= posCF2 {
+		t.Errorf("frame2: Gateway legend should come before CloudFlare, got GW at %d and CF at %d", posGW2, posCF2)
 	}
 }
 
@@ -222,7 +235,7 @@ func TestRunLoop(t *testing.T) {
 				&mockPingSource{address: "1.1.1.1", values: tt.cfValues},
 			}
 
-			err := runLoop(ctx, term, sources, tt.maxFrames)
+			err := runLoop(ctx, term, sources, tt.maxFrames, time.Millisecond)
 			if err != nil {
 				t.Fatalf("runLoop error: %v", err)
 			}
@@ -234,6 +247,32 @@ func TestRunLoop(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunLoopNonBlocking(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	term := &mockTerminal{width: 80}
+
+	// Gateway responds 3 times, CloudFlare only once.
+	sources := []PingSource{
+		&mockPingSource{address: "192.168.1.1", values: []int64{10, 20, 30}},
+		&mockPingSource{address: "1.1.1.1", values: []int64{50}},
+	}
+
+	// We expect 4 frames total (3 from GW + 1 from CF)
+	err := runLoop(ctx, term, sources, 4, time.Millisecond)
+	if err != nil {
+		t.Fatalf("runLoop error: %v", err)
+	}
+
+	out := term.buf.String()
+	if !strings.Contains(out, "Gateway: 30 ms") {
+		t.Error("should have rendered frame with latest gateway value")
+	}
+	if !strings.Contains(out, "CloudFlare: 50 ms") {
+		t.Error("should have rendered frame with latest cloudflare value")
 	}
 }
 
@@ -250,7 +289,7 @@ func TestRunLoopContextCancel(t *testing.T) {
 
 	done := make(chan error)
 	go func() {
-		done <- runLoop(ctx, term, sources, 0) // unlimited frames
+		done <- runLoop(ctx, term, sources, 0, time.Millisecond) // unlimited frames
 	}()
 
 	// Let it render a couple frames then cancel
